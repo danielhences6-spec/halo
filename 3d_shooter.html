@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D Shooter</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', system-ui, sans-serif; }
+  canvas { display: block; }
+
+  #crosshair {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 22px;
+    height: 22px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 10;
+  }
+  #crosshair::before, #crosshair::after {
+    content: "";
+    position: absolute;
+    background: rgba(0, 255, 140, 0.85);
+  }
+  #crosshair::before { top: 50%; left: 0; width: 100%; height: 2px; transform: translateY(-50%); }
+  #crosshair::after { left: 50%; top: 0; height: 100%; width: 2px; transform: translateX(-50%); }
+
+  #hud {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    color: #eafff2;
+    z-index: 10;
+    text-shadow: 0 0 8px rgba(0,0,0,0.9);
+  }
+  #hud .row { font-size: 1.3rem; font-weight: 700; margin-bottom: 6px; }
+  #hud .sub { font-size: 0.9rem; opacity: 0.8; }
+
+  #timer {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    color: #eafff2;
+    font-size: 1.3rem;
+    font-weight: 700;
+    z-index: 10;
+    text-shadow: 0 0 8px rgba(0,0,0,0.9);
+  }
+
+  #hitmarker {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 30px;
+    height: 30px;
+    transform: translate(-50%, -50%) rotate(45deg);
+    pointer-events: none;
+    z-index: 11;
+    opacity: 0;
+  }
+  #hitmarker.show {
+    animation: hitflash 0.15s ease-out;
+  }
+  #hitmarker::before, #hitmarker::after {
+    content: "";
+    position: absolute;
+    background: #ff3b3b;
+  }
+  #hitmarker::before { top: 50%; left: 0; width: 100%; height: 3px; transform: translateY(-50%); }
+  #hitmarker::after { left: 50%; top: 0; height: 100%; width: 3px; transform: translateX(-50%); }
+  @keyframes hitflash { 0% { opacity: 1; } 100% { opacity: 0; } }
+
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(5, 10, 8, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    color: #eafff2;
+    z-index: 20;
+    text-align: center;
+  }
+  #overlay h1 {
+    font-size: 2.2rem;
+    margin-bottom: 14px;
+    text-shadow: 0 0 20px rgba(0,255,140,0.6);
+  }
+  #overlay p { margin: 6px 0; opacity: 0.85; font-size: 1rem; max-width: 420px; }
+  #overlay button {
+    margin-top: 24px;
+    padding: 14px 36px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    border: none;
+    border-radius: 40px;
+    cursor: pointer;
+    background: linear-gradient(135deg, #00ffa2, #00b876);
+    color: #012;
+    box-shadow: 0 0 25px rgba(0,255,140,0.5);
+  }
+  #overlay button:hover { transform: scale(1.05); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="hud" class="hidden">
+  <div class="row">Score: <span id="score">0</span></div>
+  <div class="sub">WASD move · Mouse look · Click to shoot</div>
+</div>
+<div id="timer" class="hidden">60</div>
+<div id="crosshair" class="hidden"></div>
+<div id="hitmarker"></div>
+
+<div id="overlay">
+  <h1>🎯 3D Target Shooter</h1>
+  <p>Move with <b>WASD</b>, look around with your <b>mouse</b>, click to shoot the glowing targets before time runs out.</p>
+  <p>Click "Start" then click the screen once to lock your mouse.</p>
+  <button id="start-btn">Start Game</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+  let scene, camera, renderer;
+  let velocity = new THREE.Vector3();
+  let direction = new THREE.Vector3();
+  let move = { forward: false, backward: false, left: false, right: false };
+  let yaw = 0, pitch = 0;
+  let targets = [];
+  let score = 0;
+  let timeLeft = 60;
+  let gameRunning = false;
+  let timerInterval;
+  const clock = new THREE.Clock();
+
+  const scoreEl = document.getElementById('score');
+  const timerEl = document.getElementById('timer');
+  const overlay = document.getElementById('overlay');
+  const hud = document.getElementById('hud');
+  const crosshair = document.getElementById('crosshair');
+  const hitmarker = document.getElementById('hitmarker');
+  const startBtn = document.getElementById('start-btn');
+
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a1512);
+    scene.fog = new THREE.Fog(0x0a1512, 20, 90);
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 1.7, 8);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // lighting
+    const ambient = new THREE.AmbientLight(0x66aa88, 0.6);
+    scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(20, 30, 10);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // ground
+    const groundGeo = new THREE.PlaneGeometry(200, 200);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a2e24 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // grid helper for depth perception
+    const grid = new THREE.GridHelper(200, 50, 0x2fbf85, 0x223a30);
+    scene.add(grid);
+
+    // scattered obstacle boxes for atmosphere
+    for (let i = 0; i < 25; i++) {
+      const size = 1 + Math.random() * 2;
+      const boxGeo = new THREE.BoxGeometry(size, size, size);
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0x243b30 });
+      const box = new THREE.Mesh(boxGeo, boxMat);
+      box.position.set(
+        (Math.random() - 0.5) * 80,
+        size / 2,
+        (Math.random() - 0.5) * 80
+      );
+      box.castShadow = true;
+      box.receiveShadow = true;
+      scene.add(box);
+    }
+
+    spawnTargets(8);
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+    window.addEventListener('resize', onResize);
+
+    renderer.domElement.addEventListener('click', onShoot);
+    document.addEventListener('pointerlockchange', onPointerLockChange);
+    document.addEventListener('mousemove', onMouseMove);
+
+    animate();
+  }
+
+  function spawnTargets(count) {
+    for (let i = 0; i < count; i++) {
+      const geo = new THREE.SphereGeometry(0.7, 16, 16);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xff3b6e,
+        emissive: 0xff1a4d,
+        emissiveIntensity: 0.6
+      });
+      const target = new THREE.Mesh(geo, mat);
+      placeTargetRandomly(target);
+      target.userData.bob = Math.random() * Math.PI * 2;
+      scene.add(target);
+      targets.push(target);
+    }
+  }
+
+  function placeTargetRandomly(target) {
+    target.position.set(
+      (Math.random() - 0.5) * 60,
+      1.2 + Math.random() * 2.5,
+      (Math.random() - 0.5) * 60
+    );
+  }
+
+  function onKeyDown(e) {
+    switch (e.code) {
+      case 'KeyW': move.forward = true; break;
+      case 'KeyS': move.backward = true; break;
+      case 'KeyA': move.left = true; break;
+      case 'KeyD': move.right = true; break;
+    }
+  }
+
+  function onKeyUp(e) {
+    switch (e.code) {
+      case 'KeyW': move.forward = false; break;
+      case 'KeyS': move.backward = false; break;
+      case 'KeyA': move.left = false; break;
+      case 'KeyD': move.right = false; break;
+    }
+  }
+
+  function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function onPointerLockChange() {
+    gameRunning = document.pointerLockElement === renderer.domElement;
+  }
+
+  function onMouseMove(e) {
+    if (!gameRunning) return;
+    const sensitivity = 0.0022;
+    yaw -= e.movementX * sensitivity;
+    pitch -= e.movementY * sensitivity;
+    pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitch));
+  }
+
+  function onShoot() {
+    if (!gameRunning) return;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+    const hits = raycaster.intersectObjects(targets);
+    if (hits.length > 0) {
+      const hit = hits[0].object;
+      hitmarker.classList.remove('show');
+      void hitmarker.offsetWidth;
+      hitmarker.classList.add('show');
+      score += 10;
+      scoreEl.textContent = score;
+      placeTargetRandomly(hit);
+    }
+  }
+
+  function updateMovement(delta) {
+    const speed = 8;
+    direction.set(0, 0, 0);
+    if (move.forward) direction.z -= 1;
+    if (move.backward) direction.z += 1;
+    if (move.left) direction.x -= 1;
+    if (move.right) direction.x += 1;
+    direction.normalize();
+
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).negate();
+    const right = new THREE.Vector3(Math.sin(yaw + Math.PI / 2), 0, Math.cos(yaw + Math.PI / 2)).negate();
+
+    velocity.set(0, 0, 0);
+    velocity.addScaledVector(forward, -direction.z);
+    velocity.addScaledVector(right, direction.x);
+
+    if (velocity.lengthSq() > 0) velocity.normalize().multiplyScalar(speed * delta);
+
+    camera.position.add(velocity);
+    camera.position.x = Math.max(-95, Math.min(95, camera.position.x));
+    camera.position.z = Math.max(-95, Math.min(95, camera.position.z));
+
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const delta = Math.min(clock.getDelta(), 0.05);
+
+    if (gameRunning) {
+      updateMovement(delta);
+    }
+
+    const t = clock.elapsedTime;
+    targets.forEach(target => {
+      target.position.y += Math.sin(t * 2 + target.userData.bob) * 0.002;
+      target.rotation.y += delta * 1.5;
+    });
+
+    renderer.render(scene, camera);
+  }
+
+  function startGame() {
+    score = 0;
+    timeLeft = 60;
+    scoreEl.textContent = score;
+    timerEl.textContent = timeLeft;
+    overlay.classList.add('hidden');
+    hud.classList.remove('hidden');
+    timerEl.classList.remove('hidden');
+    crosshair.classList.remove('hidden');
+
+    renderer.domElement.requestPointerLock();
+
+    clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      timeLeft--;
+      timerEl.textContent = timeLeft;
+      if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        endGame();
+      }
+    }, 1000);
+  }
+
+  function endGame() {
+    gameRunning = false;
+    document.exitPointerLock();
+    hud.classList.add('hidden');
+    timerEl.classList.add('hidden');
+    crosshair.classList.add('hidden');
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+      <h1>⏱ Time's Up!</h1>
+      <p>Final Score: <b>${score}</b></p>
+      <p>Think you can beat it?</p>
+      <button id="start-btn">Play Again</button>
+    `;
+    document.getElementById('start-btn').addEventListener('click', startGame);
+  }
+
+  startBtn.addEventListener('click', startGame);
+
+  init();
+</script>
+
+</body>
+</html>
